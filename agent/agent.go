@@ -49,8 +49,9 @@ var invalidFilenameChars = strings.NewReplacer(
 	"|", "-",
 )
 
-// Agent extracts structured contacts from unstructured input using an LLM
-// and writes them to an Obsidian vault via a ContactWriter.
+// Agent extracts structured contacts from unstructured input using an LLM.
+// The Create* methods also write them to an Obsidian vault via a
+// ContactWriter; the Extract* methods only extract and validate.
 type Agent struct {
 	client *openai.Client
 	model  string
@@ -68,9 +69,47 @@ func New(client *openai.Client, model string, writer ContactWriter) *Agent {
 }
 
 // CreateContact extracts a Contact from the given free-form input using the
-// LLM, renders it as markdown, and writes it to the vault. It returns the
-// extracted Contact.
+// LLM, renders it as markdown, and writes it to the vault via the Agent's
+// ContactWriter. It returns the extracted Contact.
+//
+// Callers that persist the contact themselves should use ExtractContact
+// instead to avoid writing it twice.
 func (a *Agent) CreateContact(ctx context.Context, input string) (*model.Contact, error) {
+	contact, err := a.ExtractContact(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := a.writeContact(ctx, contact); err != nil {
+		return nil, fmt.Errorf("write contact: %w", err)
+	}
+
+	return contact, nil
+}
+
+// CreateContactFromImage extracts a Contact from a business card image at
+// the given path using a vision-capable LLM, renders it as markdown, and
+// writes it to the vault via the Agent's ContactWriter. It returns the
+// extracted Contact.
+//
+// Callers that persist the contact themselves should use
+// ExtractContactFromImage instead to avoid writing it twice.
+func (a *Agent) CreateContactFromImage(ctx context.Context, imagePath string) (*model.Contact, error) {
+	contact, err := a.ExtractContactFromImage(ctx, imagePath)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := a.writeContact(ctx, contact); err != nil {
+		return nil, fmt.Errorf("write contact: %w", err)
+	}
+
+	return contact, nil
+}
+
+// ExtractContact extracts and validates a Contact from the given free-form
+// input using the LLM. It does not write anything to the vault.
+func (a *Agent) ExtractContact(ctx context.Context, input string) (*model.Contact, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return nil, fmt.Errorf("input is empty")
@@ -81,13 +120,17 @@ func (a *Agent) CreateContact(ctx context.Context, input string) (*model.Contact
 		return nil, fmt.Errorf("extract contact: %w", err)
 	}
 
-	return a.finalizeContact(ctx, contact)
+	if err := validateContact(contact); err != nil {
+		return nil, err
+	}
+
+	return contact, nil
 }
 
-// CreateContactFromImage extracts a Contact from a business card image at
-// the given path using a vision-capable LLM, renders it as markdown, and
-// writes it to the vault. It returns the extracted Contact.
-func (a *Agent) CreateContactFromImage(ctx context.Context, imagePath string) (*model.Contact, error) {
+// ExtractContactFromImage extracts and validates a Contact from a business
+// card image at the given path using a vision-capable LLM. It does not
+// write anything to the vault.
+func (a *Agent) ExtractContactFromImage(ctx context.Context, imagePath string) (*model.Contact, error) {
 	dataURL, err := encodeImageDataURL(imagePath)
 	if err != nil {
 		return nil, fmt.Errorf("read image: %w", err)
@@ -98,21 +141,21 @@ func (a *Agent) CreateContactFromImage(ctx context.Context, imagePath string) (*
 		return nil, fmt.Errorf("extract contact from image: %w", err)
 	}
 
-	return a.finalizeContact(ctx, contact)
-}
-
-// finalizeContact validates the extracted contact and writes it to the
-// vault.
-func (a *Agent) finalizeContact(ctx context.Context, contact *model.Contact) (*model.Contact, error) {
-	if strings.TrimSpace(contact.Name) == "" {
-		return nil, fmt.Errorf("extracted contact has no name")
-	}
-
-	if err := a.writeContact(ctx, contact); err != nil {
-		return nil, fmt.Errorf("write contact: %w", err)
+	if err := validateContact(contact); err != nil {
+		return nil, err
 	}
 
 	return contact, nil
+}
+
+// validateContact checks that an extracted contact has the fields required
+// to be saved as a note.
+func validateContact(contact *model.Contact) error {
+	if strings.TrimSpace(contact.Name) == "" {
+		return fmt.Errorf("extracted contact has no name")
+	}
+
+	return nil
 }
 
 // writeContact renders the contact as markdown and writes it to the vault

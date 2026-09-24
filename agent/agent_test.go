@@ -2,7 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -277,5 +280,165 @@ func TestBuildImageMessages(t *testing.T) {
 	}
 	if parts[1].ImageURL == nil || parts[1].ImageURL.URL != dataURL {
 		t.Errorf("parts[1].ImageURL = %+v, want URL %q", parts[1].ImageURL, dataURL)
+	}
+}
+
+// newTestAgent returns an Agent whose LLM client talks to a fake
+// OpenAI-compatible server that always replies with the given content.
+func newTestAgent(t *testing.T, content string, writer ContactWriter) *Agent {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := openai.ChatCompletionResponse{
+			Choices: []openai.ChatCompletionChoice{
+				{Message: openai.ChatCompletionMessage{
+					Role:    openai.ChatMessageRoleAssistant,
+					Content: content,
+				}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := openai.DefaultConfig("test-key")
+	cfg.BaseURL = srv.URL + "/v1"
+
+	return New(openai.NewClientWithConfig(cfg), "test-model", writer)
+}
+
+// writeTestImage writes a minimal PNG to a temp dir and returns its path.
+func writeTestImage(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "card.png")
+	if err := os.WriteFile(path, pngSignature, 0o600); err != nil {
+		t.Fatalf("failed to write test image: %v", err)
+	}
+
+	return path
+}
+
+const testContactJSON = `{"name": "John Smith", "company": "Google"}`
+
+func TestAgent_ExtractContact_DoesNotWrite(t *testing.T) {
+	writer := &mockWriter{}
+	a := newTestAgent(t, testContactJSON, writer)
+
+	c, err := a.ExtractContact(context.Background(), "  John Smith from Google  ")
+	if err != nil {
+		t.Fatalf("ExtractContact() error = %v", err)
+	}
+	if c.Name != "John Smith" || c.Company != "Google" {
+		t.Errorf("ExtractContact() = %+v, want Name=John Smith Company=Google", c)
+	}
+	if writer.calls != 0 {
+		t.Errorf("expected no Write calls, got %d", writer.calls)
+	}
+}
+
+func TestAgent_ExtractContact_EmptyInput(t *testing.T) {
+	writer := &mockWriter{}
+	a := New(nil, "test-model", writer)
+
+	if _, err := a.ExtractContact(context.Background(), "   "); err == nil {
+		t.Fatal("expected error for empty input, got nil")
+	}
+	if writer.calls != 0 {
+		t.Errorf("expected no Write calls, got %d", writer.calls)
+	}
+}
+
+func TestAgent_ExtractContact_MissingName(t *testing.T) {
+	writer := &mockWriter{}
+	a := newTestAgent(t, `{"name": "  ", "company": "Google"}`, writer)
+
+	if _, err := a.ExtractContact(context.Background(), "someone at Google"); err == nil {
+		t.Fatal("expected error for missing name, got nil")
+	}
+	if writer.calls != 0 {
+		t.Errorf("expected no Write calls, got %d", writer.calls)
+	}
+}
+
+func TestAgent_ExtractContactFromImage_DoesNotWrite(t *testing.T) {
+	writer := &mockWriter{}
+	a := newTestAgent(t, testContactJSON, writer)
+
+	c, err := a.ExtractContactFromImage(context.Background(), writeTestImage(t))
+	if err != nil {
+		t.Fatalf("ExtractContactFromImage() error = %v", err)
+	}
+	if c.Name != "John Smith" {
+		t.Errorf("c.Name = %q, want %q", c.Name, "John Smith")
+	}
+	if writer.calls != 0 {
+		t.Errorf("expected no Write calls, got %d", writer.calls)
+	}
+}
+
+func TestAgent_ExtractContactFromImage_MissingName(t *testing.T) {
+	writer := &mockWriter{}
+	a := newTestAgent(t, `{"name": ""}`, writer)
+
+	if _, err := a.ExtractContactFromImage(context.Background(), writeTestImage(t)); err == nil {
+		t.Fatal("expected error for missing name, got nil")
+	}
+	if writer.calls != 0 {
+		t.Errorf("expected no Write calls, got %d", writer.calls)
+	}
+}
+
+func TestAgent_CreateContact_Writes(t *testing.T) {
+	writer := &mockWriter{}
+	a := newTestAgent(t, testContactJSON, writer)
+
+	c, err := a.CreateContact(context.Background(), "John Smith from Google")
+	if err != nil {
+		t.Fatalf("CreateContact() error = %v", err)
+	}
+	if writer.calls != 1 {
+		t.Fatalf("expected 1 Write call, got %d", writer.calls)
+	}
+	if writer.path != "Contacts/John Smith.md" {
+		t.Errorf("writer.path = %q, want %q", writer.path, "Contacts/John Smith.md")
+	}
+	if writer.content != GenerateMarkdown(c) {
+		t.Errorf("writer.content = %q, want %q", writer.content, GenerateMarkdown(c))
+	}
+}
+
+func TestAgent_CreateContact_PropagatesWriterError(t *testing.T) {
+	writer := &mockWriter{err: errors.New("write failed")}
+	a := newTestAgent(t, testContactJSON, writer)
+
+	_, err := a.CreateContact(context.Background(), "John Smith from Google")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, writer.err) {
+		t.Errorf("error = %v, want it to wrap %v", err, writer.err)
+	}
+}
+
+func TestAgent_CreateContactFromImage_Writes(t *testing.T) {
+	writer := &mockWriter{}
+	a := newTestAgent(t, testContactJSON, writer)
+
+	c, err := a.CreateContactFromImage(context.Background(), writeTestImage(t))
+	if err != nil {
+		t.Fatalf("CreateContactFromImage() error = %v", err)
+	}
+	if writer.calls != 1 {
+		t.Fatalf("expected 1 Write call, got %d", writer.calls)
+	}
+	if writer.path != "Contacts/John Smith.md" {
+		t.Errorf("writer.path = %q, want %q", writer.path, "Contacts/John Smith.md")
+	}
+	if writer.content != GenerateMarkdown(c) {
+		t.Errorf("writer.content = %q, want %q", writer.content, GenerateMarkdown(c))
 	}
 }
