@@ -336,7 +336,7 @@ func TestBusinessCardFlowUnchangedWithPairing(t *testing.T) {
 	b.handleUpdate(context.Background(), textUpdate(alice, "Jerry M. Chen, Google"))
 
 	if a.textInput != "Jerry M. Chen, Google" {
-		t.Errorf("CreateContact input = %q", a.textInput)
+		t.Errorf("ExtractContact input = %q", a.textInput)
 	}
 	if p.pairCalls != 0 {
 		t.Error("contact text was sent to pair_agent")

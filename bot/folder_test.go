@@ -123,18 +123,22 @@ func (f *fakeFolders) SelectFolder(ctx context.Context, telegramUserID int64, fo
 	return model.Folder{}, client.ErrUnknownFolder
 }
 
+// The real agent must satisfy contactAgent through its extraction-only
+// methods.
+var _ contactAgent = (*agent.Agent)(nil)
+
 // fakeAgent returns jerry for any input.
 type fakeAgent struct {
 	textInput string
 	imageSeen bool
 }
 
-func (f *fakeAgent) CreateContact(ctx context.Context, input string) (*model.Contact, error) {
+func (f *fakeAgent) ExtractContact(ctx context.Context, input string) (*model.Contact, error) {
 	f.textInput = input
 	return jerry, nil
 }
 
-func (f *fakeAgent) CreateContactFromImage(ctx context.Context, imagePath string) (*model.Contact, error) {
+func (f *fakeAgent) ExtractContactFromImage(ctx context.Context, imagePath string) (*model.Contact, error) {
 	_, err := os.Stat(imagePath)
 	f.imageSeen = err == nil
 	return jerry, nil
@@ -494,7 +498,7 @@ func TestTextFlowSavesContact(t *testing.T) {
 	}})
 
 	if a.textInput != "Jerry M. Chen, Google" {
-		t.Errorf("CreateContact input = %q", a.textInput)
+		t.Errorf("ExtractContact input = %q", a.textInput)
 	}
 	assertSavedAndConfirmed(t, tg, s)
 }
@@ -517,7 +521,7 @@ func TestPhotoFlowSavesContact(t *testing.T) {
 	}})
 
 	if !a.imageSeen {
-		t.Error("CreateContactFromImage did not get the downloaded photo")
+		t.Error("ExtractContactFromImage did not get the downloaded photo")
 	}
 	assertSavedAndConfirmed(t, tg, s)
 }

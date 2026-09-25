@@ -32,6 +32,34 @@ func main() {
 	flag.StringVar(&imagePath, "image", "", "path to a business card image to extract a contact from")
 	flag.Parse()
 
+	llmModel := os.Getenv("OPENROUTER_MODEL")
+	if llmModel == "" {
+		llmModel = defaultOpenRouterModel
+	}
+
+	telegramToken := os.Getenv("TELEGRAM_BOT_TOKEN")
+
+	if telegramToken != "" {
+		// Telegram mode: the agent only extracts contacts; the bot saves
+		// them to each user's vault through the pairing server, so no
+		// direct Obsidian connection (and no ContactWriter) is needed.
+		openRouterKey := os.Getenv("OPENROUTER_API_KEY")
+		if openRouterKey == "" {
+			log.Fatal("OPENROUTER_API_KEY is not set")
+		}
+
+		pairingURL := os.Getenv("PAIRING_SERVER_URL")
+		if pairingURL == "" {
+			log.Fatal("PAIRING_SERVER_URL is not set")
+		}
+
+		a := agent.New(newLLMClient(openRouterKey), llmModel, nil)
+
+		runBot(ctx, telegramToken, a, pairingURL)
+		return
+	}
+
+	// CLI mode: the agent writes the contact directly to Obsidian.
 	mcpURL := os.Getenv("OBSIDIAN_MCP_URL")
 	apiKey := os.Getenv("OBSIDIAN_API_KEY")
 	openRouterKey := os.Getenv("OPENROUTER_API_KEY")
@@ -46,29 +74,22 @@ func main() {
 		log.Fatal("OPENROUTER_API_KEY is not set")
 	}
 
-	llmModel := os.Getenv("OPENROUTER_MODEL")
-	if llmModel == "" {
-		llmModel = defaultOpenRouterModel
-	}
-
 	obsidian, err := client.New(ctx, mcpURL, apiKey)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer obsidian.Close()
 
-	config := openai.DefaultConfig(openRouterKey)
-	config.BaseURL = openRouterBaseURL
-	llmClient := openai.NewClientWithConfig(config)
-
-	a := agent.New(llmClient, llmModel, obsidian)
-
-	if telegramToken := os.Getenv("TELEGRAM_BOT_TOKEN"); telegramToken != "" {
-		runBot(ctx, telegramToken, a, os.Getenv("PAIRING_SERVER_URL"))
-		return
-	}
+	a := agent.New(newLLMClient(openRouterKey), llmModel, obsidian)
 
 	runCLI(ctx, a, imagePath)
+}
+
+// newLLMClient returns an OpenAI-compatible client pointed at OpenRouter.
+func newLLMClient(openRouterKey string) *openai.Client {
+	config := openai.DefaultConfig(openRouterKey)
+	config.BaseURL = openRouterBaseURL
+	return openai.NewClientWithConfig(config)
 }
 
 // runBot starts the Telegram bot and blocks until ctx is cancelled. If

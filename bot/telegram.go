@@ -27,10 +27,12 @@ const usageMessage = `Send me a text description of a contact, or a photo of a b
 Example:
 John Smith, Google, Software Engineer, +998901234567, john@gmail.com`
 
-// contactAgent is the subset of agent.Agent the bot depends on.
+// contactAgent is the subset of agent.Agent the bot depends on. It only
+// extracts contacts; the bot persists them itself (see saveContact), so it
+// must never use agent.Agent's Create* methods, which also write the note.
 type contactAgent interface {
-	CreateContact(ctx context.Context, input string) (*model.Contact, error)
-	CreateContactFromImage(ctx context.Context, imagePath string) (*model.Contact, error)
+	ExtractContact(ctx context.Context, input string) (*model.Contact, error)
+	ExtractContactFromImage(ctx context.Context, imagePath string) (*model.Contact, error)
 }
 
 // fileSaver is the subset of client.PairingClient used to save notes to the
@@ -153,7 +155,7 @@ func (b *Bot) handleText(ctx context.Context, msg *tgbotapi.Message) {
 		return
 	}
 
-	contact, err := b.agent.CreateContact(ctx, msg.Text)
+	contact, err := b.agent.ExtractContact(ctx, msg.Text)
 	if err != nil {
 		b.replyError(msg.Chat.ID, err)
 		return
@@ -172,7 +174,7 @@ func (b *Bot) handlePhoto(ctx context.Context, msg *tgbotapi.Message) {
 	}
 	defer os.Remove(path)
 
-	contact, err := b.agent.CreateContactFromImage(ctx, path)
+	contact, err := b.agent.ExtractContactFromImage(ctx, path)
 	if err != nil {
 		b.replyError(msg.Chat.ID, err)
 		return
